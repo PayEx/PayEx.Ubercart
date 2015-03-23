@@ -1,0 +1,60 @@
+<?php
+// $Id$
+
+/**
+ * @file uc_bankdebit.install
+ * Installation and upgrade hooks for the uc_bankdebit module.
+ */
+
+/**
+ * Implementation of hook_schema().
+ */
+function uc_bankdebit_schema() {
+  $schema = array();
+  $schema['uc_bankdebit_transactions'] = array(
+    'fields' => array(
+      'id' => array(
+        'description' => 'Primary key',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'order_id' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'Order Id',
+      ),
+      'transaction_id' => array(
+        'description' => 'PayEx Transaction Id',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'transaction_status' => array(
+        'description' => 'PayEx Transaction Status',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'transaction_data' => array(
+        'description' => 'PayEx Transaction Data',
+        'type' => 'text',
+      ),
+      'date' => array(
+        'description' => 'PayEx Transaction Date',
+        'type' => 'datetime',
+        'mysql_type' => 'DATETIME'
+      ),
+    ),
+    'primary key' => array('id'),
+    'unique keys' => array(
+      'receipt_order_id' => array('transaction_id'),
+    ),
+    'indexes' => array(
+      'order_id' => array('order_id', 'transaction_status'),
+    ),
+  );
+
+  return $schema;
+}
