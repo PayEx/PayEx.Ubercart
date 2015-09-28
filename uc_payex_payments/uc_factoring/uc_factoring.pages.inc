@@ -33,7 +33,7 @@ function uc_factoring_capture_payment($transaction_id) {
       'amount' => round(100 * $order->order_total),
       'orderId' => $order->order_id,
       'vatAmount' => 0,
-      'additionalValues' => 'INVOICESALE_ORDERLINES=' . urlencode(uc_factoring_invoice_xml($order))
+      'additionalValues' => 'FINANCINGINVOICE_ORDERLINES=' . urlencode(uc_factoring_invoice_xml($order))
     );
     $result = $px->Capture5($params);
     if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {

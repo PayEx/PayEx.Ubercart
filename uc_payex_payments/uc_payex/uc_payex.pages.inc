@@ -12,11 +12,6 @@
  * @return void
  */
 function uc_payex_order_confirm($order_id) {
-  // Check OrderRef
-  if (empty($_GET['orderRef'])) {
-    return;
-  }
-
   // Get Px
   $px = new Px();
   $px->setEnvironment(
@@ -25,14 +20,49 @@ function uc_payex_order_confirm($order_id) {
     variable_get('uc_payex_testmode', 'yes') === 'yes'
   );
 
-  // Call PxOrder.Complete
-  $params = array(
-    'accountNumber' => '',
-    'orderRef' => $_GET['orderRef']
-  );
-  $result = $px->Complete($params);
-  if ($result['errorCodeSimple'] !== 'OK') {
-    $error_message = uc_payex_extract_error_message($result);
+  if (!empty($_GET['orderRef'])) {
+    // Call PxOrder.Complete
+    $params = array(
+      'accountNumber' => '',
+      'orderRef' => $_GET['orderRef']
+    );
+    $result = $px->Complete($params);
+    if ($result['errorCodeSimple'] !== 'OK') {
+      $error_message = uc_payex_extract_error_message($result);
+      watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
+      drupal_set_message($error_message, 'error');
+      drupal_goto();
+      return;
+    }
+  }
+  elseif (!empty($_GET['transaction_id'])) {
+    // Call PxOrder.GetTransactionDetails2
+    $params = array(
+      'accountNumber' => '',
+      'transactionNumber' => $_GET['transaction_id']
+    );
+    $result = $px->GetTransactionDetails2($params);
+    if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
+      $error_message = uc_payex_extract_error_message($result);
+      watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
+      drupal_set_message($error_message, 'error');
+      drupal_goto();
+    }
+
+    // Check transaction is correct
+    if ($result['orderId'] != $order_id) {
+      $error_message = t('Incorrect transaction @transaction_id for order @order_id', array(
+        '@transaction_id' => $_GET['transaction_id'],
+        '@order' => $result['orderId']
+      ));
+      watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
+      drupal_set_message($error_message, 'error');
+      drupal_goto();
+      return;
+    }
+  }
+  else {
+    $error_message = 'The required parameters have not been set';
     watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
     drupal_set_message($error_message, 'error');
     drupal_goto();
@@ -49,11 +79,24 @@ function uc_payex_order_confirm($order_id) {
     return;
   }
 
-  // Save Transaction
-  uc_payex_transaction_add($order_id, $result['transactionNumber'], $result['transactionStatus'], $result);
-
   // Load order
   $order = uc_order_load($order_id);
+
+  // Save Agreement Reference
+  if (!empty($result['agreementRef'])) {
+    // Call PxAgreement.AgreementCheck
+    $params = array(
+      'accountNumber' => '',
+      'agreementRef' => $result['agreementRef'],
+    );
+    $check = $px->AgreementCheck($params);
+    if (!empty($check['agreementStatus'])) {
+      uc_payex_agreement_add($result['agreementRef'], $check['agreementStatus'], $order->uid, date('Y-m-d H:i:s'), $result['maskedNumber'], $result['paymentMethod'], $result['paymentMethodExpireDate']);
+    }
+  }
+
+  // Save Transaction
+  uc_payex_transaction_add($order_id, $result['transactionNumber'], $result['transactionStatus'], $result);
 
   /**
    * Transaction statuses:

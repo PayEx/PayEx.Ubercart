@@ -518,7 +518,7 @@ function uc_bankdebit_get_shipping_price_with_tax($price) {
 function uc_bankdebit_get_error_message($errorCode) {
   $errorMessages = array(
     'REJECTED_BY_ACQUIRER' => t('Your customers bank declined the transaction, your customer can contact their bank for more information'),
-    'Error_Generic' => t('An unhandled exception occurred'),
+    //'Error_Generic' => t('An unhandled exception occurred'),
     '3DSecureDirectoryServerError' => t('A problem with Visa or MasterCards directory server, that communicates transactions for 3D-Secure verification'),
     'AcquirerComunicationError' => t('Communication error with the acquiring bank'),
     'AmountNotEqualOrderLinesTotal' => t('The sum of your order lines is not equal to the price set in initialize'),

@@ -100,12 +100,62 @@ function uc_payex_uc_payment_method() {
 
 /**
  * Callback for PayEx Payment Method settings
- * @param  $op
- * @param  $order
- * @return array
+ * @param $op
+ * @param $order
+ * @param null $form
+ * @param null $form_state
+ * @return array|mixed|null|void
  */
-function uc_payment_method_payex($op, &$order) {
+function uc_payment_method_payex($op, &$order, $form = NULL, &$form_state = NULL) {
   switch ($op) {
+    case 'cart-details':
+      // Add Card Selector to Checkout form
+      $use_savecards = variable_get('uc_payex_savecards', FALSE);
+      if ($use_savecards) {
+        $details = uc_payment_method_payex_form(array(), $form_state, $order);
+        return $details;
+      }
+    return false;
+    case 'cart-process':
+      // Save Details
+      $_SESSION['payex_details'] = isset($form_state['input']['panes']['payment']['details']) ? $form_state['input']['panes']['payment']['details'] : array();
+
+      // Validate Agreement Status
+      $use_savecards = variable_get('uc_payex_savecards', FALSE);
+      if ($use_savecards && $order->uid > 0 && isset($_SESSION['payex_details']['selected_card']) && is_numeric($_SESSION['payex_details']['selected_card'])) {
+        $agreement_id = $_SESSION['payex_details']['selected_card'];
+        $agreement = uc_payex_agreement_load($agreement_id);
+        if ($agreement->user_id !== $order->uid) {
+          form_set_error('panes][payment][details][selected_card', t('You not the owner of of this card'));
+          return FALSE;
+        }
+
+        // Get Px
+        $px = new Px();
+        $px->setEnvironment(
+          variable_get('uc_payex_account', ''),
+          variable_get('uc_payex_encryption_key', ''),
+          variable_get('uc_payex_testmode', 'yes') === 'yes'
+        );
+
+        // Call PxAgreement.AgreementCheck
+        $params = array(
+          'accountNumber' => '',
+          'agreementRef' => $agreement->agreement_reference,
+        );
+        $result = $px->AgreementCheck($params);
+        if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
+          form_set_error('panes][payment][details][selected_card', uc_factoring_extract_error_message($result));
+          return FALSE;
+        }
+
+        if (!isset($result['agreementStatus']) || (int) $result['agreementStatus'] !== 1) {
+          form_set_error('panes][payment][details][selected_card', t('Invalid agreement status'));
+          return FALSE;
+        }
+      }
+
+      return TRUE;
     case 'order-view':
       // Form for Order View
       $build = array();
@@ -197,6 +247,24 @@ function uc_payment_method_payex($op, &$order) {
         '#description' => t('Use Responsive web design on PayEx pages'),
         '#default_value' => variable_get('uc_payex_responsive', FALSE),
       );
+      $form['uc_payex_savecards'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Enable Cards Saving'),
+        '#description' => t('Cards saving to get one-click payments'),
+        '#default_value' => variable_get('uc_payex_savecards', FALSE),
+      );
+      $form['uc_payex_max_amount'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Max amount per transaction'),
+        '#description' => t('This option use with \'Enable Cards Saving\' option. One single transaction can never be greater than this amount.'),
+        '#default_value' => 1000,
+      );
+      $form['uc_payex_agreement_url'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Agreement URL'),
+        '#description' => t('This option use with \'Enable Cards Saving\' option. A reference that links this agreement to something the merchant takes money for.'),
+        '#default_value' => $GLOBALS['base_url'],
+      );
       return $form;
     case 'order-submit':
       $order_id = $order->order_id;
@@ -219,7 +287,9 @@ function uc_payment_method_payex($op, &$order) {
         variable_get('uc_payex_testmode', 'yes') === 'yes'
       );
 
+      $purchase_operation = variable_get('uc_payex_purchase_operation', 'SALE');
       $payment_view = variable_get('uc_payex_payment_view', 'PX');
+      $agreement = '';
 
       $additional = $payment_view === 'PX' ? 'PAYMENTMENU=TRUE' : '';
       if (variable_get('uc_payex_responsive', FALSE)) {
@@ -227,10 +297,78 @@ function uc_payment_method_payex($op, &$order) {
         $additional .= $separator . 'USECSS=RESPONSIVEDESIGN';
       }
 
+      $use_savecards = variable_get('uc_payex_savecards', FALSE);
+      if ($use_savecards && $order->uid > 0) {
+        // Perform AutoPay using selected card
+        if (isset($_SESSION['payex_details']['selected_card']) && is_numeric($_SESSION['payex_details']['selected_card'])) {
+          // Load Agreement Reference
+          $agreement_id = $_SESSION['payex_details']['selected_card'];
+          $result = uc_payex_agreement_load($agreement_id);
+          if ($result->user_id !== $order->uid) {
+            $error_message = t('You not the owner of of this card');
+            watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
+            drupal_set_message($error_message, 'error');
+            drupal_goto('cart/checkout');
+            return;
+          }
+
+          // Call PxAgreement.AutoPay3
+          $params = array(
+            'accountNumber' => '',
+            'agreementRef' => $result->agreement_reference,
+            'price' => round($order->order_total * 100),
+            'productNumber' => (int) $result->user_id,
+            'description' => variable_get('site_name', 'Ubercart'),
+            'orderId' => $order->order_id,
+            'purchaseOperation' => $purchase_operation,
+            'currency' => $order->currency
+          );
+          $result = $px->AutoPay3($params);
+          if ($result['errorCodeSimple'] !== 'OK') {
+            $error_message = uc_payex_extract_error_message($result);
+            watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
+            drupal_set_message($error_message, 'error');
+            drupal_goto('cart/checkout');
+            return;
+          }
+
+          // Confirm order
+          drupal_goto('uc_payex/confirm/' . $order->order_id, array(
+            'query' => array(
+              'transaction_id' => $result['transactionNumber']
+            )
+          ));
+          return;
+        }
+
+        // Create Agreement Reference
+        // Call PxAgreement.CreateAgreement3
+        $params = array(
+          'accountNumber' => '',
+          'merchantRef' => variable_get('uc_payex_agreement_url', $GLOBALS['base_url']),
+          'description' => variable_get('site_name', 'Ubercart'),
+          'purchaseOperation' => $purchase_operation,
+          'maxAmount' => round(variable_get('uc_payex_max_amount', 1000) * 100),
+          'notifyUrl' => '',
+          'startDate' => '',
+          'stopDate' => ''
+        );
+        $result = $px->CreateAgreement3($params);
+        if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
+          $error_message = uc_payex_extract_error_message($result);
+          watchdog('PayEx error', $error_message, array(), WATCHDOG_WARNING);
+          drupal_set_message($error_message, 'error');
+          drupal_goto('cart/checkout');
+          return;
+        }
+
+        $agreement = $result['agreementRef'];
+      }
+
       // Call PxOrder.Initialize8
       $params = array(
         'accountNumber' => '',
-        'purchaseOperation' => variable_get('uc_payex_purchase_operation', 'SALE'),
+        'purchaseOperation' => $purchase_operation,
         'price' => round($order->order_total * 100),
         'priceArgList' => '',
         'currency' => $order->currency,
@@ -244,11 +382,10 @@ function uc_payment_method_payex($op, &$order) {
         'externalID' => '',
         'returnUrl' => url('uc_payex/confirm/' . $order->order_id, array('absolute' => TRUE)),
         'view' => $payment_view,
-        'agreementRef' => '',
+        'agreementRef' => $agreement,
         'cancelUrl' => url('uc_payex/cancel', array('absolute' => TRUE)),
         'clientLanguage' => variable_get('uc_payex_language', 'en-US')
       );
-
       $result = $px->Initialize8($params);
       if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
         $error_message = uc_payex_extract_error_message($result);
@@ -425,7 +562,7 @@ function uc_payment_method_payex($op, &$order) {
       }
 
       // Redirect to PayEx
-      drupal_goto($redirectUrl);      
+      drupal_goto($redirectUrl);
   }
 }
 
@@ -512,6 +649,71 @@ function uc_payex_transactions_load_by_order_id($order_id) {
 }
 
 /**
+ * Add Agreement Reference
+ * @param $agreement_reference
+ * @param $agreement_status
+ * @param $user_id
+ * @param $creation_date
+ * @param $masked_number
+ * @param $card_type
+ * @param $card_expire_date
+ * @return DatabaseStatementInterface|int
+ * @throws Exception
+ */
+function uc_payex_agreement_add($agreement_reference, $agreement_status, $user_id, $creation_date, $masked_number, $card_type, $card_expire_date) {
+  $select = db_select('uc_payex_agreements')
+    ->fields('uc_payex_agreements')
+    ->condition('agreement_reference', $agreement_reference, '=');
+  $agreement = $select->execute()->fetch();
+
+  if (!$agreement) {
+    $id = db_insert('uc_payex_agreements')
+      ->fields(array(
+        'agreement_reference' => $agreement_reference,
+        'agreement_status' => $agreement_status,
+        'user_id' => $user_id,
+        'creation_date' => $creation_date,
+        'masked_number' => $masked_number,
+        'card_type' => $card_type,
+        'card_expire_date' => $card_expire_date,
+      ))
+      ->execute();
+    return $id;
+  }
+
+  return $agreement->agreement_id;
+}
+
+/**
+ * Load Agreement by User ID
+ * @param $user_id
+ * @param $agreement_status
+ * @return mixed
+ */
+function uc_payex_agreement_load_by_user_id($user_id, $agreement_status) {
+  $select = db_select('uc_payex_agreements')
+    ->fields('uc_payex_agreements')
+    ->condition('user_id', $user_id, '=')
+    ->condition('agreement_status', $agreement_status, '=')
+    ->orderBy('creation_date', 'DESC');
+
+  return $select->execute()->fetchAllAssoc('agreement_id');
+}
+
+/**
+ * Load Agreement by Agreement ID
+ * @param $agreement_id
+ * @return mixed
+ */
+function uc_payex_agreement_load($agreement_id) {
+  $select = db_select('uc_payex_agreements')
+    ->fields('uc_payex_agreements')
+    ->condition('agreement_id', $agreement_id, '=');
+
+  return $select->execute()->fetch();
+}
+
+/**
  * Calculates the taxes that should be included in a product's display price.
  * This function like uc_taxes_get_included_tax()
  * @param $product
@@ -559,7 +761,7 @@ function uc_payex_get_shipping_price_with_tax($price) {
 function uc_payex_get_error_message($errorCode) {
   $errorMessages = array(
     'REJECTED_BY_ACQUIRER' => t('Your customers bank declined the transaction, your customer can contact their bank for more information'),
-    'Error_Generic' => t('An unhandled exception occurred'),
+    //'Error_Generic' => t('An unhandled exception occurred'),
     '3DSecureDirectoryServerError' => t('A problem with Visa or MasterCards directory server, that communicates transactions for 3D-Secure verification'),
     'AcquirerComunicationError' => t('Communication error with the acquiring bank'),
     'AmountNotEqualOrderLinesTotal' => t('The sum of your order lines is not equal to the price set in initialize'),
@@ -615,4 +817,38 @@ function uc_payex_extract_error_message(array $details) {
   }
 
   return t('PayEx error: @message', array('@message' => $errorCode . ' (' . $errorDescription . ')'));
+}
+
+/**
+ * Displays the Card Select form on the checkout screen
+ * @param $form
+ * @param $form_state
+ * @param $order
+ * @return mixed
+ */
+function uc_payment_method_payex_form($form, &$form_state, $order) {
+  if (!user_is_logged_in()) {
+    return array();
+  }
+
+  // Get Agreements
+  global $user;
+  $agreements = uc_payex_agreement_load_by_user_id($user->uid, 1);
+  $saved_cards = array();
+  foreach ($agreements as $_id => $agreement) {
+    $saved_cards[$agreement->agreement_id] = $agreement->card_type . ' ' . $agreement->masked_number;
+  }
+
+  $saved_cards['new-card'] = t('Use a new credit card');
+  $agreement_ids = array_keys($saved_cards);
+
+  $form['selected_card'] = array(
+    '#type' => 'radios',
+    '#title' => t('Select Saved Credit Card'),
+    '#default_value' => isset($form_state['input']['panes']['payment']['details']['selected_card']) ? $form_state['input']['panes']['payment']['details']['selected_card'] : $agreement_ids[0],
+    '#options' => $saved_cards,
+    '#description' => t('You can select your Credit Card from the list or add a new'),
+  );
+
+  return $form;
 }

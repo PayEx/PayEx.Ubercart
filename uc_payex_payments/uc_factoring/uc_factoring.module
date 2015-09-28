@@ -56,13 +56,25 @@ function uc_factoring_uc_payment_method() {
   );
 
   $methods[] = array(
+    'id' => 'payex_financing_invoice',
+    'name' => t('PayEx Financing Invoice'),
+    'title' => t('Payment using PayEx Financing Invoice'),
+    'review' => t('PayEx Financing Invoice'),
+    'desc' => t('Payment using PayEx Financing Invoice'),
+    'callback' => 'uc_payment_method_financing_invoice',
+    'weight' => 2,
+    'checkout' => TRUE,
+    'no_gateway' => TRUE,
+  );
+
+  $methods[] = array(
     'id' => 'payex_partpayment',
     'name' => t('PayEx Part Payment'),
     'title' => t('Payment using PayEx Part Payment'),
     'review' => t('PayEx Part Payment'),
     'desc' => t('Payment using PayEx Part Payment'),
     'callback' => 'uc_payment_method_partpayment',
-    'weight' => 2,
+    'weight' => 3,
     'checkout' => TRUE,
     'no_gateway' => TRUE,
   );
@@ -71,10 +83,12 @@ function uc_factoring_uc_payment_method() {
 }
 
 /**
- * Callback for PayEx Factoring Payment Method
- * @param  $op
- * @param  $order
- * @return array
+ * Callback for PayEx Payment Method settings
+ * @param $op
+ * @param $order
+ * @param null $form
+ * @param null $form_state
+ * @return array|mixed|null|void
  */
 function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = NULL) {
   switch ($op) {
@@ -106,13 +120,16 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
         variable_get('uc_factoring_testmode', 'yes') === 'yes'
       );
 
-      // Call PxVerification.GetConsumerLegalAddress
+      // Call PxOrder.GetAddressByPaymentMethod
       $params = array(
         'accountNumber' => '',
-        'countryCode' => $form_state['input']['panes']['payment']['details']['billing_country_code'],
-        'socialSecurityNumber' => $form_state['input']['panes']['payment']['details']['social_security_number']
+        'paymentMethod' => $billing_country[0]['country_iso_code_2'] === 'SE' ? 'PXFINANCINGINVOICESE' : 'PXFINANCINGINVOICENO',
+        'ssn' => $form_state['input']['panes']['payment']['details']['social_security_number'],
+        'zipcode' => '',
+        'countryCode' => $billing_country[0]['country_iso_code_2'],
+        'ipAddress' => ip_address()
       );
-      $result = $px->GetConsumerLegalAddress($params);
+      $result = $px->GetAddressByPaymentMethod($params);
       if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
         if (preg_match('/\bInvalid parameter:SocialSecurityNumber\b/i', $result['description'])) {
           form_set_error('panes][payment][details][social_security_number', t('Invalid Social Security Number'));
@@ -222,6 +239,12 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
         variable_get('uc_factoring_testmode', 'yes') === 'yes'
       );
 
+      $views = array(
+        'payex_financing_invoice' => 'FINANCING',
+        'payex_factoring' => 'FACTORING',
+        'payex_partpayment' => 'CREDITACCOUNT',
+      );
+
       // Call PxOrder.Initialize8
       $params = array(
         'accountNumber' => '',
@@ -238,7 +261,7 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
         'additionalValues' => '',
         'externalID' => '',
         'returnUrl' => 'http://localhost.no/return',
-        'view' => $order->payment_method === 'payex_factoring' ? 'FACTORING' : 'CREDITACCOUNT',
+        'view' => $views[$order->payment_method],
         'agreementRef' => '',
         'cancelUrl' => 'http://localhost.no/cancel',
         'clientLanguage' => variable_get('uc_factoring_language', 'en-US')
@@ -255,27 +278,72 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
 
       $orderRef = $result['orderRef'];
 
-      // Call PxOrder.PurchaseInvoiceSale / PxOrder.PurchasePartPaymentSale
-      $params = array(
-        'accountNumber' => '',
-        'orderRef' => $orderRef,
-        'socialSecurityNumber' => $order->payment_details['social_security_number'],
-        'legalFirstName' => $order->billing_first_name,
-        'legalLastName' => $order->billing_last_name,
-        'legalStreetAddress' => trim($order->billing_street1 . ' ' . $order->billing_street2),
-        'legalCoAddress' => '',
-        'legalPostNumber' => $order->billing_postal_code,
-        'legalCity' => $order->billing_city,
-        'legalCountryCode' => $order->payment_details['billing_country_code'],
-        'email' => $order->primary_email,
-        'msisdn' => (substr($order->billing_phone, 0, 1) === '+') ? $order->billing_phone : '+' . $order->billing_phone,
-        'ipAddress' => ip_address(),
-      );
+      // Perform Payment
+      switch ($views[$order->payment_method]) {
+        case 'FINANCING':
+          // Call PxOrder.PurchaseFinancingInvoice
+          $params = array(
+            'accountNumber' => '',
+            'orderRef' => $orderRef,
+            'socialSecurityNumber' => $order->payment_details['social_security_number'],
+            'legalName' => $order->billing_first_name . ' ' . $order->billing_last_name,
+            'streetAddress' => trim($order->billing_street1 . ' ' . $order->billing_street2),
+            'coAddress' => '',
+            'zipCode' => $order->billing_postal_code,
+            'city' => $order->billing_city,
+            'countryCode' => $order->payment_details['billing_country_code'],
+            'paymentMethod' => $order->payment_details['billing_country_code'] === 'SE' ? 'PXFINANCINGINVOICESE' : 'PXFINANCINGINVOICENO',
+            'email' => $order->primary_email,
+            'msisdn' => (substr($order->billing_phone, 0, 1) === '+') ? $order->billing_phone : '+' . $order->billing_phone,
+            'ipAddress' => ip_address()
+          );
 
-      if ($order->payment_method === 'payex_factoring') {
-        $result = $px->PurchaseInvoiceSale($params);
-      } else {
-        $result = $px->PurchasePartPaymentSale($params);
+          $result = $px->PurchaseFinancingInvoice($params);
+          break;
+        case 'FACTORING':
+          // Call PxOrder.PurchaseInvoiceSale
+          $params = array(
+            'accountNumber' => '',
+            'orderRef' => $orderRef,
+            'socialSecurityNumber' => $order->payment_details['social_security_number'],
+            'legalFirstName' => $order->billing_first_name,
+            'legalLastName' => $order->billing_last_name,
+            'legalStreetAddress' => trim($order->billing_street1 . ' ' . $order->billing_street2),
+            'legalCoAddress' => '',
+            'legalPostNumber' => $order->billing_postal_code,
+            'legalCity' => $order->billing_city,
+            'legalCountryCode' => $order->payment_details['billing_country_code'],
+            'email' => $order->primary_email,
+            'msisdn' => (substr($order->billing_phone, 0, 1) === '+') ? $order->billing_phone : '+' . $order->billing_phone,
+            'ipAddress' => ip_address(),
+          );
+
+          $result = $px->PurchaseInvoiceSale($params);
+          break;
+        case 'CREDITACCOUNT':
+          // Call PxOrder.PurchasePartPaymentSale
+          $params = array(
+            'accountNumber' => '',
+            'orderRef' => $orderRef,
+            'socialSecurityNumber' => $order->payment_details['social_security_number'],
+            'legalFirstName' => $order->billing_first_name,
+            'legalLastName' => $order->billing_last_name,
+            'legalStreetAddress' => trim($order->billing_street1 . ' ' . $order->billing_street2),
+            'legalCoAddress' => '',
+            'legalPostNumber' => $order->billing_postal_code,
+            'legalCity' => $order->billing_city,
+            'legalCountryCode' => $order->payment_details['billing_country_code'],
+            'email' => $order->primary_email,
+            'msisdn' => (substr($order->billing_phone, 0, 1) === '+') ? $order->billing_phone : '+' . $order->billing_phone,
+            'ipAddress' => ip_address(),
+          );
+
+          $result = $px->PurchasePartPaymentSale($params);
+          break;
+        default:
+          drupal_set_message(t('Invalid payment mode'), 'error');
+          drupal_goto('cart/checkout');
+          return;
       }
 
       if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
@@ -353,21 +421,6 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
 }
 
 /**
- * Callback for PayEx Part Payment Method
- * @param  $op
- * @param  $order
- * @return array
- */
-function uc_payment_method_partpayment($op, &$order, $form = NULL, &$form_state = NULL) {
-  if ($op === 'settings') {
-    // Uses a common settings form
-    return false;
-  }
-
-  return uc_payment_method_factoring($op, $order, $form, $form_state);
-}
-
-/**
  * Displays the Social Security Number form on the checkout screen
  * @param $form
  * @param $form_state
@@ -389,6 +442,36 @@ function uc_payment_method_factoring_form($form, &$form_state, $order) {
   );
 
   return $form;
+}
+
+/**
+ * Callback for PayEx Part Payment Method
+ * @param  $op
+ * @param  $order
+ * @return array
+ */
+function uc_payment_method_partpayment($op, &$order, $form = NULL, &$form_state = NULL) {
+  if ($op === 'settings') {
+    // Uses a common settings form
+    return false;
+  }
+
+  return uc_payment_method_factoring($op, $order, $form, $form_state);
+}
+
+/**
+ * Callback for PayEx Part Payment Method
+ * @param  $op
+ * @param  $order
+ * @return array
+ */
+function uc_payment_method_financing_invoice($op, &$order, $form = NULL, &$form_state = NULL) {
+  if ($op === 'settings') {
+    // Uses a common settings form
+    return false;
+  }
+
+  return uc_payment_method_factoring($op, $order, $form, $form_state);
 }
 
 /**
@@ -490,7 +573,7 @@ function uc_factoring_get_shipping_price_with_tax($price) {
 function uc_factoring_get_error_message($errorCode) {
   $errorMessages = array(
     'REJECTED_BY_ACQUIRER' => t('Your customers bank declined the transaction, your customer can contact their bank for more information'),
-    'Error_Generic' => t('An unhandled exception occurred'),
+    //'Error_Generic' => t('An unhandled exception occurred'),
     '3DSecureDirectoryServerError' => t('A problem with Visa or MasterCards directory server, that communicates transactions for 3D-Secure verification'),
     'AcquirerComunicationError' => t('Communication error with the acquiring bank'),
     'AmountNotEqualOrderLinesTotal' => t('The sum of your order lines is not equal to the price set in initialize'),
@@ -581,7 +664,7 @@ function uc_factoring_invoice_xml($order) {
     $OrderLine->appendChild($dom->createElement('UnitPrice', $price));
     $OrderLine->appendChild($dom->createElement('VatRate', $tax_percent));
     $OrderLine->appendChild($dom->createElement('VatAmount', $tax_amount * $qty));
-    $OrderLine->appendChild($dom->createElement('Amount', $price * $qty));
+    $OrderLine->appendChild($dom->createElement('Amount', ($price + $tax_amount) * $qty));
     $OrderLines->appendChild($OrderLine);
   }
 
