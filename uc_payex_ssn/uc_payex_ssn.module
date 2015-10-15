@@ -1,0 +1,256 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * Add Social Security Number Field to Checkout
+ */
+
+if (!class_exists('Px')) {
+  require_once dirname(__FILE__) . '/library/Px/Px.php';
+}
+
+if (!class_exists('FullNameParser')) {
+  require_once dirname(__FILE__) . '/library/parser.php';
+}
+
+/**
+ * Implements hook_uc_checkout_pane().
+ */
+function uc_payex_ssn_uc_checkout_pane() {
+  $panes['ssn'] = array(
+    'callback' => 'uc_checkout_pane_ssn',
+    'title' => t('Social Security Number'),
+    'desc' => t('Get billing information using Social Security Number.'),
+    'weight' => 1.1,
+    //'process' => FALSE,
+    //'collapsible' => FALSE,
+  );
+
+  return $panes;
+}
+
+/**
+ * @param $op
+ * @param $order
+ * @param null $form
+ * @param null $form_state
+ * @return array
+ */
+function uc_checkout_pane_ssn($op, $order, $form = NULL, &$form_state = NULL) {
+  global $user;
+  switch ($op) {
+    case 'view':
+      $description = t('Get billing information using Social Security Number');
+
+      $contents['#attached']['js'][] = drupal_get_path('module', 'uc_payex_ssn') . '/js/script.js';
+
+      $contents['uid'] = array(
+        '#type' => 'hidden',
+        '#value' => $user->uid,
+      );
+
+      $contents['social_security_number'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Social Security Number'),
+        '#default_value' => '',
+        '#size' => 15,
+        '#required' => FALSE,
+      );
+
+      $contents['get_info_button'] = array(
+        '#type' => 'button',
+        '#value' => t('Get info'),
+        '#ajax' => array(
+          'callback' => 'form_ajax_check_ssn',
+          'wrapper' => 'uc_payex_ssn',
+          'method' => 'replace',
+          'effect' => 'fade',
+        ),
+      );
+
+      $contents['uc_payex_ssn'] = array(
+        '#tree' => TRUE,
+        '#prefix' => '<div id="uc_payex_ssn">',
+        '#suffix' => '</div>',
+        '#weight' => 0,
+      );
+
+      return array('description' => $description, 'contents' => $contents);
+
+    case 'process':
+      //$pane = $form_state['values']['panes']['ssn'];
+      return TRUE;
+    case 'settings':
+      // Form for PayEx Settings
+      $form['uc_payex_ssn_account'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Account Number'),
+        '#description' => t('Account Number of PayEx Merchant.'),
+        '#default_value' => variable_get('uc_payex_ssn_account', ''),
+      );
+      $form['uc_payex_ssn_encryption_key'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Encryption Key'),
+        '#description' => t('PayEx Encryption Key of PayEx Merchant.'),
+        '#default_value' => variable_get('uc_payex_ssn_encryption_key', ''),
+      );
+      $form['uc_payex_ssn_testmode'] = array(
+        '#type' => 'select',
+        '#title' => t('Test Mode'),
+        '#description' => t('Enable PayEx Test Mode'),
+        '#options' => array(
+          'yes' => t('Yes'),
+          'no' => t('No')
+        ),
+        '#default_value' => variable_get('uc_payex_ssn_testmode', 'yes'),
+      );
+
+      return $form;
+  }
+}
+
+/**
+ * AJAX callback for SSN
+ * @param $form
+ * @param $form_state
+ * @return array
+ */
+function form_ajax_check_ssn($form, $form_state) {
+  // Clear form errors output
+  unset($_SESSION['messages']['error']);
+
+  $ssn = $form_state['input']['panes']['ssn']['social_security_number'];
+
+  // Remove non-numeric
+  $ssn = preg_replace('/[^0-9]/s', '', $ssn);
+
+  // Check SSN
+  if (empty($ssn)) {
+    $result = array(
+      'status' => 'error',
+      'message' => t('Social security number is empty')
+    );
+
+    $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+    return array(
+      '#type' => 'ajax',
+      '#commands' => $commands,
+    );
+  }
+
+  // Get Country Code
+  $country_code = _uc_payex_ssn_get_country_code($ssn);
+  if (!$country_code) {
+    $result = array(
+      'status' => 'error',
+      'message' => t('Invalid Social Security Number')
+    );
+
+    $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+    return array(
+      '#type' => 'ajax',
+      '#commands' => $commands,
+    );
+  }
+
+  // Validate country
+  if (!in_array($country_code, array('SE', 'NO'))) {
+    $result = array(
+      'status' => 'error',
+      'message' => t('Your country don\'t supported')
+    );
+
+    $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+    return array(
+      '#type' => 'ajax',
+      '#commands' => $commands,
+    );
+  }
+
+  // Get Px
+  $px = new Px();
+  $px->setEnvironment(
+    variable_get('uc_payex_ssn_account', ''),
+    variable_get('uc_payex_ssn_encryption_key', ''),
+    variable_get('uc_payex_ssn_testmode', 'yes') === 'yes'
+  );
+
+  // Call PxOrder.GetAddressByPaymentMethod
+  $params = array(
+    'accountNumber' => '',
+    'paymentMethod' => 'PXFINANCINGINVOICE' . $country_code,
+    'ssn' => $ssn,
+    'zipcode' => '',
+    'countryCode' => $country_code,
+    'ipAddress' => ip_address()
+  );
+  $result = $px->GetAddressByPaymentMethod($params);
+  if ($result['code'] !== 'OK' || $result['description'] !== 'OK' || $result['errorCode'] !== 'OK') {
+    $result = array(
+      'status' => 'error',
+      'message' => $result['errorCode'] . '(' . $result['description'] . ')'
+    );
+
+    $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+    return array(
+      '#type' => 'ajax',
+      '#commands' => $commands,
+    );
+  }
+
+  // Parse name field
+  $parser = new FullNameParser();
+  $name = $parser->parse_name($result['name']);
+
+  // Get Country ID
+  $country_id = uc_store_default_country();
+  $countries = uc_get_country_data(array(
+    'country_iso_code_2' => $result['countryCode']
+  ));
+  if ($countries > 0) {
+    $country_id = $countries[0]['country_id'];
+  }
+
+  // Success
+  $result = array(
+    'status' => 'success',
+    'first_name' => $name['fname'],
+    'last_name' => $name['lname'],
+    'address_1' => $result['streetAddress'],
+    'address_2' => !empty($result['coAddress']) ? 'c/o ' . $result['coAddress'] : '',
+    'postcode' => $result['zipCode'],
+    'city' => $result['city'],
+    'country' => $result['countryCode'],
+    'country_id' => $country_id
+  );
+
+  $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+  return array(
+    '#type' => 'ajax',
+    '#commands' => $commands,
+  );
+}
+
+/**
+ * Get Country Code by SSN
+ * @param $ssn
+ * @return string|bool
+ */
+function _uc_payex_ssn_get_country_code($ssn) {
+  $rules = array(
+    'NO' => '/^[0-9]{6,6}((-[0-9]{5,5})|([0-9]{2,2}((-[0-9]{5,5})|([0-9]{1,1})|([0-9]{3,3})|([0-9]{5,5))))$/',
+    'SE' => '/^[0-9]{6,6}(([0-9]{2,2}[-\+]{1,1}[0-9]{4,4})|([-\+]{1,1}[0-9]{4,4})|([0-9]{4,6}))$/',
+    //'FI' => '/^[0-9]{6,6}(([A\+-]{1,1}[0-9]{3,3}[0-9A-FHJK-NPR-Y]{1,1})|([0-9]{3,3}[0-9A-FHJK-NPR-Y]{1,1})|([0-9]{1,1}-{0,1}[0-9A-FHJK-NPR-Y]{1,1}))$/i',
+    //'DK' => '/^[0-9]{8,8}([0-9]{2,2})?$/',
+    //'NL' => '/^[0-9]{7,9}$/'
+  );
+
+  foreach ($rules as $country_code => $pattern) {
+    if ((bool)preg_match($pattern, $ssn)) {
+      return $country_code;
+    }
+  }
+
+  return false;
+}

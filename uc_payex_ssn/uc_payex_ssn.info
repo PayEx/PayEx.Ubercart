@@ -1,0 +1,6 @@
+name = Social Security Number Field (PayEx)
+description = Add Social Security Number Field to Checkout
+core = 7.x
+package = Ubercart - extra
+dependencies[] = uc_store
+version = "7.x-1.0"
