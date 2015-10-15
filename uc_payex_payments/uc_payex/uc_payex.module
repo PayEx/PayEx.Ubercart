@@ -294,7 +294,13 @@ function uc_payment_method_payex($op, &$order, $form = NULL, &$form_state = NULL
       $additional = $payment_view === 'PX' ? 'PAYMENTMENU=TRUE' : '';
       if (variable_get('uc_payex_responsive', FALSE)) {
         $separator = (!empty($additional) && mb_substr($additional, -1) !== '&') ? '&' : '';
-        $additional .= $separator . 'USECSS=RESPONSIVEDESIGN';
+
+        // PayEx Payment Page 2.0  works only for View 'Credit Card' and 'Direct Debit' at the moment
+        if (in_array($payment_view, array('CREDITCARD', 'DIRECTDEBIT'))) {
+          $additional .= $separator . 'RESPONSIVE=1';
+        } else {
+          $additional .= $separator . 'USECSS=RESPONSIVEDESIGN';
+        }
       }
 
       $use_savecards = variable_get('uc_payex_savecards', FALSE);
