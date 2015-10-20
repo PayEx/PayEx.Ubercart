@@ -58,6 +58,25 @@ function uc_checkout_pane_ssn($op, $order, $form = NULL, &$form_state = NULL) {
         '#required' => FALSE,
       );
 
+      $contents['postcode'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Postcode'),
+        '#default_value' => '',
+        '#size' => 15,
+        '#required' => FALSE,
+      );
+
+      $contents['country_code'] = array(
+        '#type' => 'select',
+        '#title' => t('Country'),
+        '#options' => array(
+          'SE' => t('Sweden'),
+          'NO' => t('Norway'),
+        ),
+        '#default_value' => 'SE',
+        '#required' => FALSE,
+      );
+
       $contents['get_info_button'] = array(
         '#type' => 'button',
         '#value' => t('Get info'),
@@ -121,9 +140,11 @@ function form_ajax_check_ssn($form, $form_state) {
   unset($_SESSION['messages']['error']);
 
   $ssn = $form_state['input']['panes']['ssn']['social_security_number'];
+  $country_code = $form_state['input']['panes']['ssn']['country_code'];
+  $postcode = $form_state['input']['panes']['ssn']['postcode'];
 
   // Remove non-numeric
-  $ssn = preg_replace('/[^0-9]/s', '', $ssn);
+  //$ssn = preg_replace('/[^0-9]/s', '', $ssn);
 
   // Check SSN
   if (empty($ssn)) {
@@ -139,12 +160,11 @@ function form_ajax_check_ssn($form, $form_state) {
     );
   }
 
-  // Get Country Code
-  $country_code = _uc_payex_ssn_get_country_code($ssn);
-  if (!$country_code) {
+  // Check Postcode
+  if (empty($postcode)) {
     $result = array(
       'status' => 'error',
-      'message' => t('Invalid Social Security Number')
+      'message' => t('Postcode is empty')
     );
 
     $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
@@ -153,6 +173,35 @@ function form_ajax_check_ssn($form, $form_state) {
       '#commands' => $commands,
     );
   }
+
+  // Check Country Code
+  if (empty($country_code)) {
+    $result = array(
+      'status' => 'error',
+      'message' => t('Country is empty')
+    );
+
+    $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+    return array(
+      '#type' => 'ajax',
+      '#commands' => $commands,
+    );
+  }
+
+  // Get Country Code
+  //$country_code = _uc_payex_ssn_get_country_code($ssn);
+  //if (!$country_code) {
+  //  $result = array(
+  //    'status' => 'error',
+  //    'message' => t('Invalid Social Security Number')
+  //  );
+
+  //  $commands[] = ajax_command_invoke(NULL, 'funcPayExSSNResult', array($result));
+  //  return array(
+  //    '#type' => 'ajax',
+  //    '#commands' => $commands,
+  //  );
+  //}
 
   // Validate country
   if (!in_array($country_code, array('SE', 'NO'))) {
@@ -181,7 +230,7 @@ function form_ajax_check_ssn($form, $form_state) {
     'accountNumber' => '',
     'paymentMethod' => 'PXFINANCINGINVOICE' . $country_code,
     'ssn' => $ssn,
-    'zipcode' => '',
+    'zipcode' => $postcode,
     'countryCode' => $country_code,
     'ipAddress' => ip_address()
   );
