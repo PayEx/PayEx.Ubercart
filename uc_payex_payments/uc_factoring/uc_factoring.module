@@ -112,6 +112,14 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
       // Set Details
       $form_state['input']['panes']['payment']['details']['billing_country_code'] = $billing_country[0]['country_iso_code_2'];
 
+      // Get Zip Code
+      $zip_code = '';
+      if (isset($form_state['input']['panes']['delivery']['delivery_postal_code'])) {
+        $zip_code = $form_state['input']['panes']['delivery']['delivery_postal_code'];
+      } elseif (isset($form_state['input']['panes']['billing']['billing_postal_code'])) {
+        $zip_code = $form_state['input']['panes']['billing']['billing_postal_code'];
+      }
+
       // Get Px
       $px = new Px();
       $px->setEnvironment(
@@ -125,7 +133,7 @@ function uc_payment_method_factoring($op, &$order, $form = NULL, &$form_state = 
         'accountNumber' => '',
         'paymentMethod' => $billing_country[0]['country_iso_code_2'] === 'SE' ? 'PXFINANCINGINVOICESE' : 'PXFINANCINGINVOICENO',
         'ssn' => $form_state['input']['panes']['payment']['details']['social_security_number'],
-        'zipcode' => '',
+        'zipcode' => $zip_code,
         'countryCode' => $billing_country[0]['country_iso_code_2'],
         'ipAddress' => ip_address()
       );
