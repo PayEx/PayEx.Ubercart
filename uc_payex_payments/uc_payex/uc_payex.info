@@ -1,6 +1,0 @@
-name = Payex Payments for Ubercart 3
-description = Provides a Payment Gateway through PayEx for Ubercart 3
-core = 7.x
-package = Ubercart - payment
-dependencies[] = uc_payment
-version = "7.x-1.3"
